@@ -1,0 +1,15 @@
+# Keep secrets, local data and build output out of every Docker build context.
+.git
+.env
+.env.*
+secrets/
+data/
+target/
+**/*.db
+**/*.db-*
+**/*.log
+*.md
+docs/
+tests/
+scripts/
+config/

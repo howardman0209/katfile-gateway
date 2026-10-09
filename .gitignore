@@ -1,0 +1,37 @@
+# Secrets and local environment (never commit)
+.env
+.env.*
+!.env.example
+/secrets/
+*.key
+*.pem
+
+# Local runtime data, databases and staging content
+/data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+
+# Build output
+/target/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.partial
+/tmp/
+
+# Large synthetic test artifacts
+*.bin
+*.img
+
+# Local compose overrides
+compose.override.yaml
+compose.override.yml
+docker-compose.override.yml
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/

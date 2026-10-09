@@ -1,0 +1,19 @@
+[package]
+name = "katfile-mock"
+description = "Test double for the KatFile API that reproduces behaviour verified on katfile.biz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = { workspace = true, features = ["multipart"] }
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
