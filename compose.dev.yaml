@@ -1,0 +1,10 @@
+# Local development overlay:
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d
+# - publishes SFTPGo WebDAV directly on loopback (no Caddy) for protocol tests;
+# - gives the worker public resolvers (the dev Mac's resolver filters katfile.biz).
+services:
+  sftpgo:
+    ports:
+      - "127.0.0.1:${WEBDAV_DEV_PORT:-8081}:8081"
+  katfile-worker:
+    dns: ["1.1.1.1", "8.8.8.8"]

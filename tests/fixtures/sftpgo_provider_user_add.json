@@ -1,0 +1,55 @@
+{
+  "query": "action=add&ip=192.0.2.10&object_name=alice&object_type=user&timestamp=1791510706450761763&username=admin",
+  "body": {
+    "created_at": 1791510706395,
+    "download_data_transfer": 0,
+    "filesystem": {
+      "azblobconfig": {},
+      "cryptconfig": {},
+      "gcsconfig": {},
+      "httpconfig": {},
+      "osconfig": {},
+      "provider": 0,
+      "s3config": {},
+      "sftpconfig": {}
+    },
+    "filters": {
+      "hooks": {
+        "check_password_disabled": false,
+        "external_auth_disabled": false,
+        "pre_login_disabled": false
+      },
+      "max_upload_file_size": 11811160064,
+      "totp_config": {
+        "secret": {}
+      }
+    },
+    "gid": 0,
+    "has_password": true,
+    "home_dir": "/srv/sftpgo/data/alice",
+    "id": 3,
+    "last_password_change": 1791510706395,
+    "max_sessions": 0,
+    "permissions": {
+      "/": [
+        "list",
+        "download",
+        "upload",
+        "create_dirs",
+        "rename",
+        "delete"
+      ]
+    },
+    "public_keys": [
+      "ssh-ed25519 AAAA...placeholder alice@kfgw-test"
+    ],
+    "quota_files": 0,
+    "quota_size": 12884901888,
+    "status": 1,
+    "total_data_transfer": 0,
+    "uid": 0,
+    "updated_at": 1791510706395,
+    "upload_data_transfer": 0,
+    "username": "alice"
+  }
+}

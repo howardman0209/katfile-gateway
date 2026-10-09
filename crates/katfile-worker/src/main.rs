@@ -1,7 +1,9 @@
 //! katfile-worker: receives SFTPGo events, keeps a durable SQLite job queue and archives
 //! completed uploads to KatFile (see README.md and docs/ARCHITECTURE.md).
 
+mod auth;
 mod config;
+mod hookrec;
 mod probe;
 mod util;
 
@@ -26,6 +28,8 @@ enum Command {
     Probe(probe::ProbeArgs),
     /// Docker HEALTHCHECK helper: exit 0 when the local /healthz endpoint answers.
     Healthcheck,
+    /// Diagnostics: authenticate and record SFTPGo hook calls without archiving anything.
+    RecordHooks(hookrec::RecordArgs),
 }
 
 /// Noisy HTTP crates are capped so request URLs never reach logs at debug/trace level.
@@ -58,6 +62,7 @@ fn main() -> ExitCode {
             Command::Serve => anyhow::bail!("serve is not implemented yet"),
             Command::Probe(args) => probe::run(args).await,
             Command::Healthcheck => healthcheck().await,
+            Command::RecordHooks(args) => hookrec::run(args).await,
         }
     });
     match result {

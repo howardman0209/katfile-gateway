@@ -1,0 +1,12 @@
+{
+  "action": "pre-upload",
+  "fs_provider": 0,
+  "ip": "192.0.2.10",
+  "path": "/srv/sftpgo/data/alice/photos/a.jpg",
+  "protocol": "DAV",
+  "session_id": "DAV_db44hcshst7s73eo8660",
+  "status": 1,
+  "timestamp": 1791510707916306430,
+  "username": "alice",
+  "virtual_path": "/photos/a.jpg"
+}

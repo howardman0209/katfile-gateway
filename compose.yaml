@@ -1,0 +1,173 @@
+# KatFile WebDAV/SFTP gateway (see README.md, docs/ARCHITECTURE.md, docs/DEPLOYMENT.md).
+#
+# Exposure policy: every host port binds to 127.0.0.1 unless .env explicitly changes
+# SFTP_BIND_ADDRESS / HTTP(S)_BIND_ADDRESS after the operator approved public access.
+# SFTPGo WebAdmin/REST API and the worker API are loopback-only by design.
+name: kfgw
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  # One-shot: create the staging layout and the worker DB directory with uid 1000
+  # ownership (works for named volumes and for root-owned bind mounts on the VPS).
+  staging-init:
+    image: drakkan/sftpgo:v2.7.6@sha256:1edd28d80de2a008863fbfc58c8ff7db47b1b410bae48d4e6076192337809b11
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        install -d -o 1000 -g 1000 -m 0750 /srv/sftpgo /srv/sftpgo/data /srv/sftpgo/uploads-tmp
+        /srv/sftpgo/spool /srv/sftpgo/spool/quarantine &&
+        install -d -o 1000 -g 1000 -m 0700 /srv/sftpgo/backups /var/lib/katfile-worker
+    volumes:
+      - ${STAGING_SOURCE:-staging}:/srv/sftpgo
+      - worker-db:/var/lib/katfile-worker
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+    network_mode: none
+    restart: "no"
+
+  sftpgo:
+    <<: *hardening
+    image: drakkan/sftpgo:v2.7.6@sha256:1edd28d80de2a008863fbfc58c8ff7db47b1b410bae48d4e6076192337809b11
+    user: "1000:1000"
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    stop_grace_period: 45s
+    depends_on:
+      staging-init: { condition: service_completed_successfully }
+    environment:
+      SFTPGO_GRACE_TIME: "40"
+      GOMEMLIMIT: "200MiB"
+      # SECURITY: the default "debug" level dumps the whole config at startup,
+      # including the hook Authorization header (webhook secret) in clear text.
+      SFTPGO_LOG_LEVEL: info
+      # Uploads land in a private temp dir and are renamed into place only when
+      # complete, so homes never contain partial files.
+      SFTPGO_COMMON__UPLOAD_MODE: "1"
+      SFTPGO_COMMON__TEMP_PATH: /srv/sftpgo/uploads-tmp
+      # chmod/chown/chtimes requests are silently ignored.
+      SFTPGO_COMMON__SETSTAT_MODE: "1"
+      SFTPGO_COMMON__DEFENDER__ENABLED: "true"
+      SFTPGO_COMMON__MAX_PER_HOST_CONNECTIONS: "20"
+      # Upload-completion hook (SFTPGo custom actions, retryable HTTP client).
+      SFTPGO_COMMON__ACTIONS__EXECUTE_ON: ${SFTPGO_FS_HOOK_EVENTS:-pre-upload,upload}
+      SFTPGO_COMMON__ACTIONS__HOOK: http://katfile-worker:8090/hooks/sftpgo/fs
+      # Provider events for user add/update/delete.
+      SFTPGO_DATA_PROVIDER__ACTIONS__EXECUTE_ON: add,update,delete
+      SFTPGO_DATA_PROVIDER__ACTIONS__EXECUTE_FOR: user
+      SFTPGO_DATA_PROVIDER__ACTIONS__HOOK: http://katfile-worker:8090/hooks/sftpgo/provider
+      SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN: "true"
+      SFTPGO_DATA_PROVIDER__USERS_BASE_DIR: /srv/sftpgo/data
+      # Lower-case, trimmed, URI-safe ASCII names (they become KatFile folder names).
+      SFTPGO_DATA_PROVIDER__NAMING_RULES: "6"
+      # Hook HTTP client: the bearer value comes from env.d (secrets/sftpgo.env).
+      SFTPGO_HTTP__TIMEOUT: "15"
+      SFTPGO_HTTP__RETRY_WAIT_MIN: "2"
+      SFTPGO_HTTP__RETRY_WAIT_MAX: "60"
+      SFTPGO_HTTP__RETRY_MAX: "5"
+      SFTPGO_HTTP__HEADERS__0__KEY: Authorization
+      SFTPGO_HTTP__HEADERS__0__URL: http://katfile-worker:8090/
+      SFTPGO_SFTPD__BINDINGS__0__PORT: "2022"
+      SFTPGO_SFTPD__MAX_AUTH_TRIES: "4"
+      SFTPGO_WEBDAVD__BINDINGS__0__PORT: "8081"
+      SFTPGO_HTTPD__BINDINGS__0__PORT: "8080"
+      # End users get WebDAV/SFTP only; the browser WebClient stays disabled.
+      SFTPGO_HTTPD__BINDINGS__0__ENABLE_WEB_CLIENT: "false"
+    volumes:
+      - ${STAGING_SOURCE:-staging}:/srv/sftpgo
+      - sftpgo-home:/var/lib/sftpgo
+      - ./secrets/sftpgo.env:/var/lib/sftpgo/env.d/kfgw-secrets.env:ro
+    ports:
+      - "${SFTP_BIND_ADDRESS:-127.0.0.1}:${SFTP_PORT:-2022}:2022"
+      - "127.0.0.1:${SFTPGO_ADMIN_HOST_PORT:-8080}:8080"
+    networks: [edge, backend]
+    healthcheck:
+      test: ["CMD", "sftpgo", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        # Go heap stays ~15 MiB (GOMEMLIMIT caps it); the rest is page cache from
+        # buffered uploads. 256m was OOM-killed in 2 of 3 local 10 GiB uploads.
+        limits: { memory: 512m, cpus: "0.50" }
+
+  katfile-worker:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: crates/katfile-worker/Dockerfile
+    image: katfile-worker:local
+    user: "1000:1000"
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    stop_grace_period: 30s
+    depends_on:
+      staging-init: { condition: service_completed_successfully }
+    command: ["${WORKER_COMMAND:-serve}"]
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      WORKER_BIND: 0.0.0.0:8090
+      WORKER_DB_PATH: /var/lib/katfile-worker/worker.db
+      WORKER_STAGING_ROOT: /srv/sftpgo
+      WORKER_WEBHOOK_SECRET_FILE: /run/secrets/worker_webhook_secret
+      WORKER_ADMIN_TOKEN_FILE: /run/secrets/worker_admin_token
+      WORKER_RETRY_MAX: ${WORKER_RETRY_MAX:-8}
+      WORKER_RETENTION_HOURS: ${WORKER_RETENTION_HOURS:-24}
+      WORKER_MIN_FREE_BYTES: ${WORKER_MIN_FREE_BYTES:-4294967296}
+      WORKER_UNKNOWN_UPLOAD_RESERVATION_BYTES: ${WORKER_UNKNOWN_UPLOAD_RESERVATION_BYTES:-1073741824}
+      WORKER_MAX_ACTIVE_KATFILE_UPLOADS: ${WORKER_MAX_ACTIVE_KATFILE_UPLOADS:-1}
+      SFTPGO_API_URL: http://sftpgo:8080/
+      SFTPGO_API_KEY_FILE: /run/secrets/sftpgo_worker_api_key
+      KATFILE_API_BASE_URL: ${KATFILE_API_BASE_URL:-https://katfile.biz/}
+      KATFILE_API_KEY_FILE: /run/secrets/katfile_api_key
+      KATFILE_UPLOAD_MODE: ${KATFILE_UPLOAD_MODE:-fixed}
+      KATFILE_USERS_PARENT_FOLDER_ID: ${KATFILE_USERS_PARENT_FOLDER_ID:-0}
+    secrets:
+      - katfile_api_key
+      - worker_webhook_secret
+      - worker_admin_token
+      - sftpgo_worker_api_key
+    volumes:
+      - ${STAGING_SOURCE:-staging}:/srv/sftpgo
+      - worker-db:/var/lib/katfile-worker
+    ports:
+      - "127.0.0.1:${WORKER_ADMIN_HOST_PORT:-8090}:8090"
+    networks: [backend, egress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/katfile-worker", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { memory: 128m, cpus: "0.50" }
+
+volumes:
+  staging: {}
+  sftpgo-home: {}
+  worker-db: {}
+
+networks:
+  # Published ports (SFTP, admin loopback, later Caddy).
+  edge: {}
+  # SFTPGo <-> worker (hooks, admin API); no route to the internet.
+  backend:
+    internal: true
+  # Worker -> KatFile only.
+  egress: {}
+
+secrets:
+  katfile_api_key: { file: ./secrets/katfile_api_key }
+  worker_webhook_secret: { file: ./secrets/worker_webhook_secret }
+  worker_admin_token: { file: ./secrets/worker_admin_token }
+  sftpgo_worker_api_key: { file: ./secrets/sftpgo_worker_api_key }

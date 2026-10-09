@@ -152,7 +152,6 @@ impl Config {
 }
 
 /// Read a secret file (trimmed); refuses empty values.
-#[expect(dead_code, reason = "used by serve (V2)")]
 pub fn read_secret(path: &Path, what: &str) -> Result<String> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("reading {what} from {}", path.display()))?;
     let value = raw.trim().to_owned();

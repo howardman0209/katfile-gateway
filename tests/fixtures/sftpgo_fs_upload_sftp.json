@@ -1,0 +1,14 @@
+{
+  "action": "upload",
+  "elapsed": 1,
+  "file_size": 32768,
+  "fs_provider": 0,
+  "ip": "192.0.2.10",
+  "path": "/srv/sftpgo/data/alice/docs/s.bin",
+  "protocol": "SFTP",
+  "session_id": "SFTP_c80fda72ff9777f2d48884e22938b1fb6cdba3fe222677fa238006c18e75302c_1",
+  "status": 1,
+  "timestamp": 1791510708037346763,
+  "username": "alice",
+  "virtual_path": "/docs/s.bin"
+}

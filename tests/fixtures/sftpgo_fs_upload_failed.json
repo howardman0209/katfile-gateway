@@ -1,0 +1,12 @@
+{
+  "action": "upload",
+  "fs_provider": 0,
+  "ip": "192.0.2.10",
+  "path": "/srv/sftpgo/data/alice/bob/copied.bin",
+  "protocol": "DAV",
+  "session_id": "DAV_db44hd4hst7s73eo86f0",
+  "status": 2,
+  "timestamp": 1791510708749380472,
+  "username": "alice",
+  "virtual_path": "/bob/copied.bin"
+}
