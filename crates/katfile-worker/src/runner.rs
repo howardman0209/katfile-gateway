@@ -264,8 +264,9 @@ async fn resolve_principal(app: &App, job: &Job) -> Result<Resolved> {
         p = app.db.principal(&p.id).await?.context("principal vanished")?;
     }
 
-    // Remote work already in flight (file code known) is completed regardless.
-    let in_flight = job.remote_file_code.is_some();
+    // Remote work already in flight (file code known) is completed regardless, and an
+    // operator retry may archive into a disabled/deleted account's own folder.
+    let in_flight = job.remote_file_code.is_some() || job.operator_override;
     let reason = p.state_reason.clone().unwrap_or_default();
     match p.state {
         PrincipalState::Deleted if !in_flight => {

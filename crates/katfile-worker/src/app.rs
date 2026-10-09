@@ -28,6 +28,8 @@ pub struct App {
     pub admission: Admission,
     pub webhook_secret: String,
     pub admin_token: String,
+    /// Secret Caddy presents to the WebDAV admission endpoint (optional).
+    pub admission_secret: Option<String>,
     pub runner_wake: Notify,
     pub provisioner_wake: Notify,
     pub reconcile_wake: Notify,
@@ -56,6 +58,10 @@ impl App {
             admission: Admission::new(cfg.min_free_bytes, cfg.unknown_upload_reservation_bytes),
             webhook_secret: read_secret(&cfg.webhook_secret_file, "webhook secret")?,
             admin_token: read_secret(&cfg.admin_token_file, "admin token")?,
+            admission_secret: match &cfg.admission_secret_file {
+                Some(p) => Some(read_secret(p, "Caddy admission secret")?),
+                None => None,
+            },
             cfg,
             db,
             staging,

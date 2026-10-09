@@ -15,7 +15,8 @@ x-hardening: &hardening
 
 services:
   # One-shot: create the staging layout and the worker DB directory with uid 1000
-  # ownership (works for named volumes and for root-owned bind mounts on the VPS).
+  # ownership, and Caddy's state with uid 1001 (works for named volumes and for
+  # root-owned bind mounts on the VPS).
   staging-init:
     image: drakkan/sftpgo:v2.7.6@sha256:1edd28d80de2a008863fbfc58c8ff7db47b1b410bae48d4e6076192337809b11
     user: "0:0"
@@ -24,10 +25,13 @@ services:
       - >-
         install -d -o 1000 -g 1000 -m 0750 /srv/sftpgo /srv/sftpgo/data /srv/sftpgo/uploads-tmp
         /srv/sftpgo/spool /srv/sftpgo/spool/quarantine &&
-        install -d -o 1000 -g 1000 -m 0700 /srv/sftpgo/backups /var/lib/katfile-worker
+        install -d -o 1000 -g 1000 -m 0700 /srv/sftpgo/backups /var/lib/katfile-worker &&
+        install -d -o 1001 -g 1001 -m 0700 /caddy/data /caddy/config
     volumes:
       - ${STAGING_SOURCE:-staging}:/srv/sftpgo
       - worker-db:/var/lib/katfile-worker
+      - caddy-data:/caddy/data
+      - caddy-config:/caddy/config
     cap_drop: ["ALL"]
     cap_add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
     network_mode: none
@@ -77,6 +81,9 @@ services:
       SFTPGO_SFTPD__BINDINGS__0__PORT: "2022"
       SFTPGO_SFTPD__MAX_AUTH_TRIES: "4"
       SFTPGO_WEBDAVD__BINDINGS__0__PORT: "8081"
+      # Real client IPs (defender, logs) come from Caddy, the only peer on backend.
+      SFTPGO_WEBDAVD__BINDINGS__0__PROXY_ALLOWED: ${KFGW_BACKEND_SUBNET:-172.30.200.0/24}
+      SFTPGO_WEBDAVD__BINDINGS__0__CLIENT_IP_PROXY_HEADER: X-Forwarded-For
       SFTPGO_HTTPD__BINDINGS__0__PORT: "8080"
       # End users get WebDAV/SFTP only; the browser WebClient stays disabled.
       SFTPGO_HTTPD__BINDINGS__0__ENABLE_WEB_CLIENT: "false"
@@ -87,7 +94,7 @@ services:
     ports:
       - "${SFTP_BIND_ADDRESS:-127.0.0.1}:${SFTP_PORT:-2022}:2022"
       - "127.0.0.1:${SFTPGO_ADMIN_HOST_PORT:-8080}:8080"
-    networks: [edge, backend]
+    networks: [sftp_edge, backend]
     healthcheck:
       test: ["CMD", "sftpgo", "ping"]
       interval: 30s
@@ -120,6 +127,7 @@ services:
       WORKER_STAGING_ROOT: /srv/sftpgo
       WORKER_WEBHOOK_SECRET_FILE: /run/secrets/worker_webhook_secret
       WORKER_ADMIN_TOKEN_FILE: /run/secrets/worker_admin_token
+      WORKER_ADMISSION_SECRET_FILE: /run/secrets/caddy_admission_secret
       WORKER_RETRY_MAX: ${WORKER_RETRY_MAX:-8}
       WORKER_RETENTION_HOURS: ${WORKER_RETENTION_HOURS:-24}
       WORKER_MIN_FREE_BYTES: ${WORKER_MIN_FREE_BYTES:-4294967296}
@@ -136,6 +144,7 @@ services:
       - worker_webhook_secret
       - worker_admin_token
       - sftpgo_worker_api_key
+      - caddy_admission_secret
     volumes:
       - ${STAGING_SOURCE:-staging}:/srv/sftpgo
       - worker-db:/var/lib/katfile-worker
@@ -152,17 +161,61 @@ services:
       resources:
         limits: { memory: 128m, cpus: "0.50" }
 
+  caddy:
+    <<: *hardening
+    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    # Non-root. The caddy binary carries the cap_net_bind_service file capability,
+    # which the kernel refuses to exec unless that capability is in the bounding set.
+    user: "1001:1001"
+    cap_add: ["NET_BIND_SERVICE"]
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    depends_on:
+      staging-init: { condition: service_completed_successfully }
+      sftpgo: { condition: service_started }
+      katfile-worker: { condition: service_started }
+    environment:
+      DAV_DOMAIN: ${DAV_DOMAIN:-localhost}
+      CADDY_TLS: ${CADDY_TLS:-internal}
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    secrets:
+      - caddy_admission_secret
+    ports:
+      - "${HTTP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-80}:80"
+      - "${HTTPS_BIND_ADDRESS:-127.0.0.1}:${HTTPS_PORT:-443}:443"
+    networks: [web_edge, backend]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "443"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { memory: 128m, cpus: "0.50" }
+
 volumes:
   staging: {}
   sftpgo-home: {}
   worker-db: {}
+  caddy-data: {}
+  caddy-config: {}
 
 networks:
-  # Published ports (SFTP, admin loopback, later Caddy).
-  edge: {}
-  # SFTPGo <-> worker (hooks, admin API); no route to the internet.
+  # Published SFTP port and the loopback-only SFTPGo admin port.
+  sftp_edge: {}
+  # Published WebDAV HTTPS (Caddy) and ACME traffic.
+  web_edge: {}
+  # Caddy <-> SFTPGo <-> worker; no route to the internet. Caddy and SFTPGo share
+  # only this network, so SFTPGo can trust X-Forwarded-For from this subnet alone.
   backend:
     internal: true
+    ipam:
+      config:
+        - subnet: ${KFGW_BACKEND_SUBNET:-172.30.200.0/24}
   # Worker -> KatFile only.
   egress: {}
 
@@ -171,3 +224,4 @@ secrets:
   worker_webhook_secret: { file: ./secrets/worker_webhook_secret }
   worker_admin_token: { file: ./secrets/worker_admin_token }
   sftpgo_worker_api_key: { file: ./secrets/sftpgo_worker_api_key }
+  caddy_admission_secret: { file: ./secrets/caddy_admission_secret }

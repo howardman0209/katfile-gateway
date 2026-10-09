@@ -83,6 +83,8 @@ pub struct Config {
     pub max_active_uploads: usize,
     pub webhook_secret_file: PathBuf,
     pub admin_token_file: PathBuf,
+    /// Enables `/hooks/caddy/admission` when set.
+    pub admission_secret_file: Option<PathBuf>,
     pub sftpgo_api_url: Url,
     pub sftpgo_api_key_file: PathBuf,
     pub reconcile_interval: Duration,
@@ -121,6 +123,10 @@ impl Config {
             max_active_uploads: parse_env("WORKER_MAX_ACTIVE_KATFILE_UPLOADS", "1")?,
             webhook_secret_file: env_or("WORKER_WEBHOOK_SECRET_FILE", "/run/secrets/worker_webhook_secret").into(),
             admin_token_file: env_or("WORKER_ADMIN_TOKEN_FILE", "/run/secrets/worker_admin_token").into(),
+            admission_secret_file: std::env::var("WORKER_ADMISSION_SECRET_FILE")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
             sftpgo_api_url: parse_env("SFTPGO_API_URL", "http://sftpgo:8080/")?,
             sftpgo_api_key_file: env_or("SFTPGO_API_KEY_FILE", "/run/secrets/sftpgo_worker_api_key").into(),
             reconcile_interval: Duration::from_secs(parse_env("WORKER_RECONCILE_INTERVAL_SECS", "600")?),

@@ -15,7 +15,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::json;
 use tracing::{debug, info, warn};
@@ -31,6 +31,7 @@ pub fn routes() -> Router<AppRef> {
     Router::new()
         .route("/hooks/sftpgo/fs", post(fs_hook))
         .route("/hooks/sftpgo/provider", post(provider_hook))
+        .route("/hooks/caddy/admission", get(caddy_admission))
         .layer(DefaultBodyLimit::max(256 * 1024))
 }
 
@@ -181,4 +182,51 @@ async fn provider_hook(State(app): State<AppRef>, Query(q): Query<ProviderQuery>
         }
     });
     reply(StatusCode::OK, "accepted")
+}
+
+/// Caddy `forward_auth` for WebDAV `PUT`: refuse uploads whose declared size does not
+/// fit before a single byte is staged. The user's credentials are stripped by Caddy;
+/// the request carries the proxy's own bearer secret.
+async fn caddy_admission(State(app): State<AppRef>, headers: HeaderMap) -> Response {
+    let Some(secret) = app.admission_secret.as_deref() else {
+        return reply(StatusCode::NOT_FOUND, "admission endpoint disabled");
+    };
+    if !bearer_matches(&headers, secret) {
+        warn!("rejected unauthenticated admission request");
+        return reply(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).map(str::trim).unwrap_or("");
+    if !header("X-Forwarded-Method").eq_ignore_ascii_case("PUT") {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    // Chunked uploads have no declared size; SFTPGo's pre-upload reserves the default.
+    let Ok(declared) = header("X-Kfgw-Declared-Length").parse::<u64>() else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let raw_path = header("X-Forwarded-Uri").split('?').next().unwrap_or("");
+    // Plain percent-decoding like SFTPGo's: escape the form separators `+` and `&` first.
+    let escaped = raw_path.replace('+', "%2B").replace('&', "%26");
+    let decoded = url::form_urlencoded::parse(format!("p={escaped}").as_bytes())
+        .next()
+        .map(|(_, v)| v.into_owned())
+        .unwrap_or_default();
+    let Ok(rel) = RelPath::parse_virtual(&decoded) else {
+        return StatusCode::NO_CONTENT.into_response(); // SFTPGo validates the path itself
+    };
+    let staging = app.staging.clone();
+    let free = match tokio::task::spawn_blocking(move || staging.free_bytes()).await {
+        Ok(Ok(f)) => f,
+        _ => return reply(StatusCode::INSUFFICIENT_STORAGE, "staging space unknown"),
+    };
+    match app.admission.declare(free, &rel.virtual_path(), declared, now_ms()) {
+        Decision::Admit => {
+            debug!(path = %rel.virtual_path(), declared, "WebDAV upload admitted at the proxy");
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Decision::Reject { free, reserved, needed } => {
+            warn!(path = %rel.virtual_path(), declared, free, reserved, needed, "WebDAV upload refused before transfer: insufficient staging space");
+            (StatusCode::INSUFFICIENT_STORAGE, "Insufficient staging space on the gateway; try again later.\n")
+                .into_response()
+        }
+    }
 }

@@ -1,0 +1,54 @@
+# WebDAV over HTTPS in front of SFTPGo (see docs/DEPLOYMENT.md).
+# {$DAV_DOMAIN} and {$CADDY_TLS} are substituted when the config is loaded:
+#   CADDY_TLS=internal            -> Caddy's local CA (testing, VPN-only setups)
+#   CADDY_TLS=admin@example.com   -> ACME (Let's Encrypt); needs public TCP 80/443
+{
+	# Static config; nothing should listen on the admin port.
+	admin off
+	# The internal CA is never installed into any system trust store.
+	skip_install_trust
+	servers {
+		# Only TCP 443 is published, so do not advertise HTTP/3 (UDP).
+		protocols h1 h2
+		timeouts {
+			read_header 30s
+			idle 5m
+			# Uploads may legitimately take hours: no total limit, but abort stalled ones.
+			read_body_idle 2m
+			write_idle 2m
+		}
+	}
+}
+
+{$DAV_DOMAIN} {
+	tls {$CADDY_TLS}
+
+	# Refuse WebDAV uploads that would not fit the staging disk before any byte is
+	# staged (507). Setting Authorization replaces the user's credentials, so the
+	# worker only sees the declared length, the path and the proxy's own secret.
+	# (Do not add "-Authorization": Caddy applies deletions after sets.)
+	@put method PUT
+	forward_auth @put katfile-worker:8090 {
+		uri /hooks/caddy/admission
+		header_up Authorization "Bearer {file./run/secrets/caddy_admission_secret}"
+		header_up X-Kfgw-Declared-Length {http.request.header.Content-Length}
+		header_up -Content-Length
+		header_up -Transfer-Encoding
+		header_up -Expect
+		header_up -Cookie
+	}
+
+	reverse_proxy sftpgo:8081 {
+		# Stream bodies both ways; Caddy never buffers uploads on disk or in memory.
+		# Host is passed through unchanged, which SFTPGo needs for MOVE/COPY.
+		flush_interval -1
+		transport http {
+			dial_timeout 5s
+		}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

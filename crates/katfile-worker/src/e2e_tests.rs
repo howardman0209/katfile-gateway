@@ -380,6 +380,32 @@ async fn deleted_user_home_is_cleared_and_recreated_name_gets_a_new_folder() {
     let principals = h.app.db.principals().await.unwrap();
     assert_eq!(principals.iter().filter(|p| p.state == PrincipalState::Deleted).count(), 1);
 
+    // An operator may still archive a blocked upload into the deleted account's folder.
+    assert_eq!(h.upload("alice", "/new-account.txt", b"new account upload", "DAV").await, 200);
+    h.settle().await;
+    assert_eq!(h.job_for("alice", "/new-account.txt").await.state, JobState::Archived);
+    let (code, _) = h.admin(Method::POST, &format!("/admin/jobs/{}/retry", pending.id), None).await;
+    assert_eq!(code, 200);
+    h.settle().await;
+    let rescued = h.job_for("alice", "/pending.jpg").await;
+    assert_eq!(rescued.state, JobState::Archived, "{rescued:?}");
+    assert_eq!(rescued.remote_folder_id, Some(old_folder as i64), "archived into the deleted account's own folder");
+    cleanup::run_once(&h.app).await;
+    assert!(h.app.staging.deleted_homes().unwrap().is_empty(), "quarantine emptied after the rescue");
+}
+
+#[tokio::test]
+async fn discarding_a_deleted_users_upload_empties_the_quarantine() {
+    let h = with_users(&["olga"]).await;
+    h.kf.inject("upload/server", Fault::HttpStatus(503));
+    h.kf.inject("upload/server", Fault::HttpStatus(503));
+    h.kf.inject("upload/server", Fault::HttpStatus(503));
+    assert_eq!(h.upload("olga", "/pending.jpg", b"not archived yet", "DAV").await, 200);
+    runner::process_due_once(&h.app).await.unwrap();
+    h.sg.remove_user("olga");
+    provision::sync_user(&h.app, "olga").await.unwrap();
+    let pending = h.job_for("olga", "/pending.jpg").await;
+    assert_eq!(pending.state, JobState::Blocked);
     // Operator discards the old account's unarchived file; the quarantine empties.
     let (code, _) = h.admin(Method::POST, &format!("/admin/jobs/{}/discard", pending.id), None).await;
     assert_eq!(code, 200);
@@ -487,6 +513,37 @@ async fn admission_rejects_uploads_when_staging_space_is_short() {
     let pre =
         json!({"action": "pre-upload", "username": "alice", "virtual_path": "/ok.mp4", "status": 1, "protocol": "DAV"});
     assert_eq!(h.hook(pre).await, 200);
+}
+
+#[tokio::test]
+async fn proxy_admission_uses_the_declared_size() {
+    let h = Harness::with(|c| c.min_free_bytes = 0).await;
+    let free = h.app.staging.free_bytes().unwrap();
+    let ask = |len: u64, path: &str, token: &'static str| {
+        h.http
+            .get(format!("{}/hooks/caddy/admission", h.base))
+            .bearer_auth(token)
+            .header("X-Forwarded-Method", "PUT")
+            .header("X-Forwarded-Uri", path)
+            .header("X-Kfgw-Declared-Length", len.to_string())
+            .send()
+    };
+    assert_eq!(ask(1, "/a.bin", "wrong-token-but-long-enough").await.unwrap().status().as_u16(), 401);
+    assert_eq!(
+        ask(1024, "/%E7%9B%B8%E7%89%87/a%20b&c+d.bin", crate::testkit::ADMISSION_SECRET)
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        204
+    );
+    // More than the whole filesystem: refused before transfer with 507.
+    let resp = ask(free.saturating_mul(2), "/huge.mp4", crate::testkit::ADMISSION_SECRET).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 507);
+    // The admitted declaration is claimed by SFTPGo's pre-upload for the same path.
+    let pre = json!({"action": "pre-upload", "username": "alice", "virtual_path": "/相片/a b&c+d.bin", "status": 1, "protocol": "DAV"});
+    assert_eq!(h.hook(pre).await, 200);
+    assert_eq!(h.app.admission.reserved_bytes(now_ms()), (1, 1024));
 }
 
 #[tokio::test]

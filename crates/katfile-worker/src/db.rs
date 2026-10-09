@@ -121,6 +121,8 @@ pub struct Job {
     pub cleaned_at_ms: Option<i64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// Operator approved archiving despite a disabled/deleted account.
+    pub operator_override: bool,
 }
 
 /// Fields of a job created from an upload event or a staging scan.
@@ -180,7 +182,7 @@ macro_rules! job_sql {
             "event_ts_ms, size_bytes, snap_dev, snap_ino, snap_mtime_ns, snapshot_held, sha256, state, remote_file_code, ",
             "remote_folder_id, upload_started_at_ms, upload_body_sent_at_ms, upload_server_time, attempts, ",
             "next_attempt_at_ms, last_error_category, last_error, archived_at_ms, retain_until_ms, cleaned_at_ms, ",
-            "created_at_ms, updated_at_ms FROM upload_jobs ",
+            "created_at_ms, updated_at_ms, operator_override FROM upload_jobs ",
             $tail
         )
     };
@@ -727,7 +729,7 @@ impl Db {
     pub async fn operator_retry(&self, id: &str) -> Result<bool> {
         let res = sqlx::query(
             "UPDATE upload_jobs SET state = 'retry_waiting', attempts = 0, next_attempt_at_ms = 0, \
-             last_error_category = 'operator_retry', updated_at_ms = ?2 \
+             last_error_category = 'operator_retry', operator_override = 1, updated_at_ms = ?2 \
              WHERE id = ?1 AND state IN ('needs_review', 'failed', 'blocked')",
         )
         .bind(id)
@@ -951,6 +953,7 @@ fn job_from_row(r: &SqliteRow) -> Result<Job> {
         cleaned_at_ms: r.try_get("cleaned_at_ms")?,
         created_at_ms: r.try_get("created_at_ms")?,
         updated_at_ms: r.try_get("updated_at_ms")?,
+        operator_override: r.try_get::<i64, _>("operator_override")? != 0,
     })
 }
 

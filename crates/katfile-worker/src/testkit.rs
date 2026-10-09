@@ -25,6 +25,7 @@ use crate::{provision, runner};
 const KATFILE_KEY: &str = "testkatfilekey123";
 pub const WEBHOOK_SECRET: &str = "test-webhook-secret-0123456789";
 pub const ADMIN_TOKEN: &str = "test-admin-token-0123456789";
+pub const ADMISSION_SECRET: &str = "test-admission-secret-0123456789";
 const SFTPGO_KEY: &str = "test-sftpgo-api-key-0123456789";
 
 pub const INBOX_PERMS: &[&str] = &["list", "download", "upload", "create_dirs", "rename", "delete"];
@@ -170,6 +171,7 @@ impl Harness {
             max_active_uploads: 1,
             webhook_secret_file: secret("webhook", WEBHOOK_SECRET),
             admin_token_file: secret("admin", ADMIN_TOKEN),
+            admission_secret_file: Some(secret("admission", ADMISSION_SECRET)),
             sftpgo_api_url: url::Url::parse(&format!("http://{}/", sg.addr)).unwrap(),
             sftpgo_api_key_file: secret("sftpgo", SFTPGO_KEY),
             reconcile_interval: Duration::from_secs(600),
