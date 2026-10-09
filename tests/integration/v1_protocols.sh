@@ -45,11 +45,6 @@ head -c 32768 /dev/urandom > "$TMP/s.bin"
 sftp_fails() { ! sftp_run "$@"; }
 sftp_ls_has() { sftp_run "$1" "ls -1 $2" && grep -q "$3" "$TMP/sftp.out"; }
 sftp_ls_lacks() { sftp_run "$1" "ls -1 $2" && ! grep -q "$3" "$TMP/sftp.out"; }
-dav_dir_has() {
-  local out
-  out="$(curl -sS -K "$TMP/$1.davcfg" -X PROPFIND -H 'Depth: 1' -w '\n%{http_code}' "$DAV$2")" || return 1
-  [[ "${out##*$'\n'}" == 207 && "$out" == *"$3"* ]]
-}
 check "SFTP mkdir + put" sftp_run "$A" "$(printf 'mkdir docs\nput %s docs/s.bin' "$TMP/s.bin")"
 check "SFTP lists the file uploaded over WebDAV" sftp_ls_has "$A" photos a.jpg
 check "WebDAV lists the file uploaded over SFTP" dav_dir_has "$A" /docs/ s.bin

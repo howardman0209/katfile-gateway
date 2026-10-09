@@ -1,11 +1,28 @@
 //! katfile-worker: receives SFTPGo events, keeps a durable SQLite job queue and archives
 //! completed uploads to KatFile (see README.md and docs/ARCHITECTURE.md).
 
+mod admission;
+mod app;
 mod auth;
+mod cleanup;
 mod config;
+mod db;
 mod hookrec;
+mod paths;
 mod probe;
+mod provision;
+mod queue;
+mod reconcile;
+mod runner;
+mod sftpgo;
+mod status;
 mod util;
+mod webhook;
+
+#[cfg(test)]
+mod e2e_tests;
+#[cfg(test)]
+mod testkit;
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -30,6 +47,11 @@ enum Command {
     Healthcheck,
     /// Diagnostics: authenticate and record SFTPGo hook calls without archiving anything.
     RecordHooks(hookrec::RecordArgs),
+    /// Write a consistent copy of the job database (SQLite VACUUM INTO).
+    BackupDb {
+        /// Destination file (must not exist).
+        dest: std::path::PathBuf,
+    },
 }
 
 /// Noisy HTTP crates are capped so request URLs never reach logs at debug/trace level.
@@ -59,10 +81,11 @@ fn main() -> ExitCode {
     };
     let result = runtime.block_on(async move {
         match cli.command.unwrap_or(Command::Serve) {
-            Command::Serve => anyhow::bail!("serve is not implemented yet"),
+            Command::Serve => app::serve(config::Config::from_env()?).await,
             Command::Probe(args) => probe::run(args).await,
             Command::Healthcheck => healthcheck().await,
             Command::RecordHooks(args) => hookrec::run(args).await,
+            Command::BackupDb { dest } => backup_db(&dest).await,
         }
     });
     match result {
@@ -72,6 +95,16 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+async fn backup_db(dest: &std::path::Path) -> anyhow::Result<()> {
+    anyhow::ensure!(!dest.exists(), "{} already exists", dest.display());
+    let path: std::path::PathBuf =
+        std::env::var("WORKER_DB_PATH").unwrap_or_else(|_| "/var/lib/katfile-worker/worker.db".into()).into();
+    let db = db::Db::open(&path).await?;
+    db.backup_to(dest).await?;
+    tracing::info!(dest = %dest.display(), "database backup written");
+    Ok(())
 }
 
 async fn healthcheck() -> anyhow::Result<()> {

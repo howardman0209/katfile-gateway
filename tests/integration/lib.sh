@@ -10,7 +10,10 @@ API="http://127.0.0.1:${SFTPGO_ADMIN_HOST_PORT:-8080}"
 DAV="http://127.0.0.1:${WEBDAV_DEV_PORT:-8081}"
 WORKER="http://127.0.0.1:${WORKER_ADMIN_HOST_PORT:-8090}"
 SFTP_PORT="${SFTP_PORT:-2022}"
-COMPOSE=(docker compose -f compose.yaml -f compose.dev.yaml)
+COMPOSE=(docker compose)
+if [[ -n "${KFGW_COMPOSE_PROJECT:-}" ]]; then COMPOSE+=(-p "$KFGW_COMPOSE_PROJECT"); fi
+COMPOSE+=(-f compose.yaml -f compose.dev.yaml)
+CURL_IMAGE="curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6"
 
 TMP="$(mktemp -d)"
 chmod 700 "$TMP"
@@ -71,6 +74,8 @@ create_user() {
   pass="$(random_hex 16)"
   printf '%s' "$pass" > "$TMP/$name.pass"
   printf 'user = "%s:%s"\n' "$name" "$pass" > "$TMP/$name.davcfg"
+  # A re-created user gets a fresh key pair.
+  if [[ -e "$TMP/$name.key" ]]; then rm "$TMP/$name.key"; rm "$TMP/$name.key.pub"; fi
   ssh-keygen -q -t ed25519 -N '' -C "$name@kfgw-test" -f "$TMP/$name.key"
   jq -n --arg u "$name" --arg p "$pass" --arg k "$(cat "$TMP/$name.key.pub")" \
     --argjson q "$quota" --argjson m "$maxfile" '{
@@ -125,3 +130,49 @@ staged_paths() {
 present_in() { staged_paths "$2" | grep -q "^$1/"; }
 # absent_from USER NAME: no file NAME anywhere in USER's home.
 absent_from() { ! present_in "$@"; }
+
+# wadmin METHOD PATH [JSON body]: worker admin API with the admin token.
+wadmin() {
+  local method="$1" url_path="$2" body="${3:-}"
+  printf 'header = "Authorization: Bearer %s"\n' "$(cat secrets/worker_admin_token)" > "$TMP/wadmin.bearer"
+  if [[ -n "$body" ]]; then
+    curl -sS -K "$TMP/wadmin.bearer" -X "$method" -H 'Content-Type: application/json' --data "$body" "$WORKER$url_path"
+  else
+    curl -sS -K "$TMP/wadmin.bearer" -X "$method" "$WORKER$url_path"
+  fi
+}
+
+# katfile ENDPOINT FORM: independent KatFile API check from a throw-away container
+# (public DNS; the key is read from the secret file inside the container).
+katfile() {
+  docker run --rm --dns 1.1.1.1 -v "$ROOT/secrets/katfile_api_key:/run/k:ro" "$CURL_IMAGE" \
+    -sS -m 60 -X POST --data-urlencode key@/run/k --data "$2" "https://katfile.biz/api/$1"
+}
+
+# wait_for DESCRIPTION SECONDS COMMAND...: poll until COMMAND succeeds.
+wait_for() {
+  local what="$1" secs="$2"
+  shift 2
+  local end=$(( $(date +%s) + secs ))
+  while (( $(date +%s) < end )); do
+    if "$@" >/dev/null 2>&1; then return 0; fi
+    sleep 2
+  done
+  log "timed out waiting for: $what"
+  return 1
+}
+
+# dav_dir_has USER DIR NAME: PROPFIND (207) of DIR lists NAME.
+dav_dir_has() {
+  local out
+  out="$(curl -sS -K "$TMP/$1.davcfg" -X PROPFIND -H 'Depth: 1' -w '\n%{http_code}' "$DAV$2")" || return 1
+  [[ "${out##*$'\n'}" == 207 && "$out" == *"$3"* ]]
+}
+
+# wadmin_internal PATH: worker admin GET from a container on the backend network
+# (works while the worker is cut off from the egress network that publishes its port).
+wadmin_internal() {
+  local net="${KFGW_COMPOSE_PROJECT:-kfgw}_backend"
+  printf 'header = "Authorization: Bearer %s"\n' "$(cat secrets/worker_admin_token)" > "$TMP/wadmin.bearer"
+  docker run --rm --network "$net" -v "$TMP/wadmin.bearer:/run/h:ro" "$CURL_IMAGE" -sS -K /run/h "http://katfile-worker:8090$1"
+}

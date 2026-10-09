@@ -49,6 +49,10 @@ pub enum Fault {
     StoreThenFail,
     /// `upload.cgi`: store the file, then wait before answering OK (client timeout).
     StoreThenHang(Duration),
+    /// `upload.cgi`: store the file anonymously (as if the session had expired) and answer OK.
+    StoreAnonymously,
+    /// `upload.cgi`: refuse the file with this `file_status`.
+    Reject(String),
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +174,26 @@ impl MockKatFile {
     /// Queue a fault for the next call to `endpoint`.
     pub fn inject(&self, endpoint: &str, fault: Fault) {
         self.state().faults.entry(endpoint.to_owned()).or_default().push_back(fault);
+    }
+
+    /// Plant an account-owned file (e.g. an unrelated upload with the same name).
+    pub fn add_file(&self, name: &str, size: u64, folder: u64, uploaded: &str) -> String {
+        let mut st = self.state();
+        st.next_file_seq += 1;
+        let code = file_code_for(st.next_file_seq);
+        st.files.insert(
+            code.clone(),
+            MockFile {
+                code: code.clone(),
+                stored_name: MockState::store_name(name),
+                size,
+                sha256: String::new(),
+                folder: Some(folder),
+                uploaded: uploaded.to_owned(),
+                chunked: false,
+            },
+        );
+        code
     }
 
     /// Pre-create a folder (e.g. a name collision) and return its id.
@@ -381,6 +405,9 @@ async fn upload_handler(State(state): State<Shared>, headers: HeaderMap, mut mul
     if let Some(resp) = apply_generic_fault(&fault).await {
         return resp;
     }
+    if let Some(Fault::Reject(status)) = &fault {
+        return json_reply(json!([{"file_status": status, "file_code": "undef"}]));
+    }
     if chunked && state.lock().expect("poisoned").reject_chunked {
         return (StatusCode::LENGTH_REQUIRED, "<html>length required</html>").into_response();
     }
@@ -426,7 +453,8 @@ async fn upload_handler(State(state): State<Shared>, headers: HeaderMap, mut mul
         st.next_file_seq += 1;
         let code = file_code_for(st.next_file_seq);
         // Verified quirk: an unknown session still stores the file, anonymously.
-        let folder = st.sessions.contains(&sess).then_some(0);
+        let anonymous = matches!(fault, Some(Fault::StoreAnonymously));
+        let folder = (st.sessions.contains(&sess) && !anonymous).then_some(0);
         st.files.insert(
             code.clone(),
             MockFile {

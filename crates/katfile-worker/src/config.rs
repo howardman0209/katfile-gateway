@@ -18,11 +18,12 @@ pub struct KatFileSettings {
     pub upload_type: String,
     pub upload_mode: UploadMode,
     /// Parent folder under which per-user root folders are provisioned (0 = account root).
-    #[expect(dead_code, reason = "used by serve (V2)")]
     pub users_parent_folder_id: u64,
     /// Test only: allow http/private endpoints (mock KatFile).
     pub insecure_test_mode: bool,
     pub upload_stall_timeout: Duration,
+    /// First retry delay for idempotent API calls.
+    pub api_retry_base_delay: Duration,
 }
 
 impl KatFileSettings {
@@ -41,6 +42,7 @@ impl KatFileSettings {
             users_parent_folder_id: parse_env("KATFILE_USERS_PARENT_FOLDER_ID", "0")?,
             insecure_test_mode: parse_bool("KATFILE_ALLOW_INSECURE_TEST_ENDPOINTS", false)?,
             upload_stall_timeout: Duration::from_secs(parse_env("KATFILE_UPLOAD_STALL_SECS", "120")?),
+            api_retry_base_delay: Duration::from_millis(parse_env("KATFILE_API_RETRY_BASE_MS", "750")?),
         })
     }
 
@@ -51,6 +53,7 @@ impl KatFileSettings {
         cfg.upload_host_pattern = self.upload_host_regex.clone();
         cfg.upload_type = self.upload_type.clone();
         cfg.upload_stall_timeout = self.upload_stall_timeout;
+        cfg.retry_base_delay = self.api_retry_base_delay;
         cfg.insecure_test_mode = self.insecure_test_mode;
         if self.insecure_test_mode {
             tracing::warn!(
@@ -62,16 +65,17 @@ impl KatFileSettings {
 }
 
 /// Full worker configuration for `serve`.
-#[expect(dead_code, reason = "used by serve (V2)")]
 #[derive(Debug, Clone)]
 pub struct Config {
     pub katfile: KatFileSettings,
     pub bind: SocketAddr,
     pub db_path: PathBuf,
-    /// Volume root shared with SFTPGo; must contain `data/` (homes) and `spool/`.
-    pub staging_root: PathBuf,
     pub users_dir: PathBuf,
     pub spool_dir: PathBuf,
+    /// SFTPGo `temp_path` (atomic-upload temp files).
+    pub temp_dir: PathBuf,
+    /// Temp files untouched for this long are leftovers of a killed SFTPGo.
+    pub stale_temp_after: Duration,
     pub retry_max: u32,
     pub retention: Duration,
     pub min_free_bytes: u64,
@@ -93,7 +97,6 @@ pub struct Config {
     pub quota_scan_after_cleanup: bool,
 }
 
-#[expect(dead_code, reason = "used by serve (V2)")]
 impl Config {
     pub fn from_env() -> Result<Self> {
         let staging_root: PathBuf = env_or("WORKER_STAGING_ROOT", "/srv/sftpgo").into();
@@ -101,13 +104,16 @@ impl Config {
             std::env::var("WORKER_USERS_DIR").map(PathBuf::from).unwrap_or_else(|_| staging_root.join("data"));
         let spool_dir =
             std::env::var("WORKER_SPOOL_DIR").map(PathBuf::from).unwrap_or_else(|_| staging_root.join("spool"));
+        let temp_dir =
+            std::env::var("WORKER_TEMP_DIR").map(PathBuf::from).unwrap_or_else(|_| staging_root.join("uploads-tmp"));
         let cfg = Config {
             katfile: KatFileSettings::from_env()?,
             bind: parse_env("WORKER_BIND", "0.0.0.0:8090")?,
             db_path: env_or("WORKER_DB_PATH", "/var/lib/katfile-worker/worker.db").into(),
-            staging_root,
             users_dir,
             spool_dir,
+            temp_dir,
+            stale_temp_after: Duration::from_secs(parse_env("WORKER_STALE_TEMP_SECS", "3600")?),
             retry_max: parse_env("WORKER_RETRY_MAX", "8")?,
             retention: Duration::from_secs(parse_env::<u64>("WORKER_RETENTION_HOURS", "24")? * 3600),
             min_free_bytes: parse_env("WORKER_MIN_FREE_BYTES", "4294967296")?,

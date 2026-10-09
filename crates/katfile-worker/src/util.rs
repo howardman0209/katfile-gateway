@@ -36,7 +36,6 @@ fn civil(ms: i64) -> (i64, u32, u32, u32, u32, u32) {
 }
 
 /// Human-readable byte count.
-#[cfg_attr(not(test), expect(dead_code, reason = "used by status (V2)"))]
 pub fn human_bytes(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut v = n as f64;
